@@ -96,35 +96,103 @@ def load_image(image_file, input_size=448, max_num=6):
     pixel_values = torch.stack(pixel_values)
     return pixel_values
 
-# Define the model path
-path = "OpenGVLab/InternVL-Chat-V1-5"
+# Define the function to process images and ask a question
+def process_images_and_ask_question(imagePaths, question, max_num=6, image_size=448):
+    all_responses = []
 
-# Load the model onto a single GPU if available
-model = (
-    AutoModel.from_pretrained(
-        path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
+    for image_path in imagePaths:
+        # Load and preprocess the image
+        pixel_values = load_image(image_path, max_num=max_num, input_size=image_size).to(torch.bfloat16).cuda()
+
+        # Configuration for text generation
+        generation_config = dict(
+            num_beams=1,
+            max_new_tokens=512,
+            do_sample=False,
+        )
+
+        # Ask the question
+        response = model.chat(tokenizer, pixel_values, question, generation_config)
+        all_responses.append((question, response))
+
+    return all_responses
+
+# Function to initialize the model and tokenizer
+def initialize_model_and_tokenizer(path="OpenGVLab/InternVL-Chat-V1-5"):
+    model = (
+        AutoModel.from_pretrained(
+            path, torch_dtype=torch.bfloat16, low_cpu_mem_usage=True, trust_remote_code=True
+        )
+        .eval()
+        .cuda()
     )
-    .eval()
-    .cuda()
-)
+    
+    torch.cuda.empty_cache()
 
-# Clear the CUDA cache
-torch.cuda.empty_cache()
-# Otherwise, you need to set device_map='auto' to use multiple GPUs for inference.
-# model = AutoModel.from_pretrained(
-#     path,
-#     torch_dtype=torch.bfloat16,
-#     low_cpu_mem_usage=True,
-#     trust_remote_code=True,
-#     device_map='auto').eval()
+    tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+    
+    return model, tokenizer
 
-# Initialize the tokenizer
-tokenizer = AutoTokenizer.from_pretrained(path, trust_remote_code=True)
+# Function for single-round single-image conversation
+def single_round_single_image_conversation(model, tokenizer, pixel_values, question, generation_config):
+    response = model.chat(tokenizer, pixel_values, question, generation_config)
+    print(question, response)
+    return response
 
-# Load and preprocess an image, convert to appropriate tensor type, and move to GPU
-pixel_values = load_image("./examples/image1.jpg", max_num=6).to(torch.bfloat16).cuda()
+# Function for multi-round single-image conversation
+def multi_round_single_image_conversation(model, tokenizer, pixel_values, questions, generation_config):
+    history = None
+    responses = []
+    for question in questions:
+        response, history = model.chat(
+            tokenizer,
+            pixel_values,
+            question,
+            generation_config,
+            history=history,
+            return_history=True,
+        )
+        print(question, response)
+        responses.append(response)
+    return responses
 
-# Configuration for text generation
+# Function for multi-round multi-image conversation
+def multi_round_multi_image_conversation(model, tokenizer, pixel_values, questions, generation_config):
+    history = None
+    responses = []
+    for question in questions:
+        response, history = model.chat(
+            tokenizer,
+            pixel_values,
+            question,
+            generation_config,
+            history=history,
+            return_history=True,
+        )
+        print(question, response)
+        responses.append(response)
+    return responses
+
+# Function for batch inference (single image per sample)
+def batch_inference(model, tokenizer, pixel_values_list, questions, generation_config):
+    image_counts = [pixel_values.size(0) for pixel_values in pixel_values_list]
+    pixel_values = torch.cat(pixel_values_list, dim=0)
+    responses = model.batch_chat(
+        tokenizer,
+        pixel_values,
+        image_counts=image_counts,
+        questions=questions,
+        generation_config=generation_config,
+    )
+    for question, response in zip(questions, responses):
+        print(question)
+        print(response)
+    return responses
+
+# Example usage
+model, tokenizer = initialize_model_and_tokenizer()
+imagePaths = ["./examples/image1.jpg", "./examples/image2.jpg"]
+pixel_values_list = [load_image(image_path, max_num=6).to(torch.bfloat16).cuda() for image_path in imagePaths]
 generation_config = dict(
     num_beams=1,
     max_new_tokens=512,
@@ -132,77 +200,13 @@ generation_config = dict(
 )
 
 # Single-round single-image conversation
-question = "请详细描述图片"  # Please describe the picture in detail
-response = model.chat(tokenizer, pixel_values, question, generation_config)
-print(question, response)
+single_round_single_image_conversation(model, tokenizer, pixel_values_list[0], "请详细描述图片", generation_config)
 
 # Multi-round single-image conversation
-question = "请详细描述图片"  # Please describe the picture in detail
-response, history = model.chat(
-    tokenizer,
-    pixel_values,
-    question,
-    generation_config,
-    history=None,
-    return_history=True,
-)
-print(question, response)
-
-# Second round of conversation
-question = "请根据图片写一首诗"  # Please write a poem according to the picture
-response, history = model.chat(
-    tokenizer,
-    pixel_values,
-    question,
-    generation_config,
-    history=history,
-    return_history=True,
-)
-print(question, response)
+multi_round_single_image_conversation(model, tokenizer, pixel_values_list[0], ["请详细描述图片", "请根据图片写一首诗"], generation_config)
 
 # Multi-round multi-image conversation
-pixel_values1 = load_image("./examples/image1.jpg", max_num=6).to(torch.bfloat16).cuda()
-pixel_values2 = load_image("./examples/image2.jpg", max_num=6).to(torch.bfloat16).cuda()
-pixel_values = torch.cat((pixel_values1, pixel_values2), dim=0)
+multi_round_multi_image_conversation(model, tokenizer, torch.cat(pixel_values_list, dim=0), ["详细描述这两张图片", "这两张图片的相同点和区别分别是什么"], generation_config)
 
-question = "详细描述这两张图片"  # Describe the two pictures in detail
-response, history = model.chat(
-    tokenizer,
-    pixel_values,
-    question,
-    generation_config,
-    history=None,
-    return_history=True,
-)
-print(question, response)
-
-# Further conversation about similarities and differences
-question = "这两张图片的相同点和区别分别是什么"  # What are the similarities and differences between these two pictures
-response, history = model.chat(
-    tokenizer,
-    pixel_values,
-    question,
-    generation_config,
-    history=history,
-    return_history=True,
-)
-print(question, response)
-
-# Batch inference (single image per sample)
-pixel_values1 = load_image("./examples/image1.jpg", max_num=6).to(torch.bfloat16).cuda()
-pixel_values2 = load_image("./examples/image2.jpg", max_num=6).to(torch.bfloat16).cuda()
-image_counts = [pixel_values1.size(0), pixel_values2.size(0)]
-pixel_values = torch.cat((pixel_values1, pixel_values2), dim=0)
-
-# Generate responses for a batch of images
-questions = ["Describe the image in detail."] * len(image_counts)
-responses = model.batch_chat(
-    tokenizer,
-    pixel_values,
-    image_counts=image_counts,
-    questions=questions,
-    generation_config=generation_config,
-)
-for question, response in zip(questions, responses):
-    print(question)
-    print(response)
+# Batch inference
+batch_inference(model, tokenizer, pixel_values_list, ["Describe the image in detail."] * len(imagePaths), generation_config)
